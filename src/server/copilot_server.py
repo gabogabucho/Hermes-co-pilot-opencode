@@ -1,204 +1,48 @@
 """
-Hermes Copilot Server — OpenAI-compatible API proxy for OpenCode.
+Hermes Copilot Bridge — Optional OpenAI-compatible proxy for non-standard setups.
 
-Receives chat completion requests from OpenCode and routes them through
-Hermes Agent, injecting memory, skills, and project context.
+This bridge is NOT required for normal use. OpenCode can connect directly to
+the Hermes gateway on port 8642. Use this bridge only if you need:
+
+  - Port translation (e.g., gateway on 8642, bridge on 7878)
+  - Extra context injection (project files, git info)
+  - Multiple Hermes instances behind one endpoint
+  - CORS handling for web-based IDEs
 
 Usage:
-    python copilot_server.py [--port 7878] [--host localhost]
+    python copilot_server.py [--port 7878] [--upstream http://127.0.0.1:8642]
 
 Then configure OpenCode to use:
     baseURL: http://localhost:7878/v1
+
+For direct connection (recommended), skip this and point OpenCode at:
+    baseURL: http://127.0.0.1:8642/v1
 """
 
 import json
 import os
-import sys
-import asyncio
 import argparse
 import logging
 from pathlib import Path
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
+import httpx
 import uvicorn
 
-# ---------------------------------------------------------------------------
-# Hermes integration
-# ---------------------------------------------------------------------------
+logger = logging.getLogger("hermes-copilot-bridge")
 
-HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-logger = logging.getLogger("hermes-copilot")
+# Defaults
+DEFAULT_UPSTREAM = os.environ.get("HERMES_GATEWAY_URL", "http://127.0.0.1:8642")
+DEFAULT_PORT = int(os.environ.get("HERMES_COPILOT_PORT", "7878"))
+DEFAULT_HOST = os.environ.get("HERMES_COPILOT_HOST", "localhost")
 
-
-def get_hermes_config() -> dict:
-    """Load Hermes config.yaml."""
-    config_path = HERMES_HOME / "config.yaml"
-    if config_path.exists():
-        import yaml
-        with open(config_path) as f:
-            return yaml.safe_load(f) or {}
-    return {}
-
-
-def get_available_models() -> list[dict]:
-    """Return models available through this proxy."""
-    return [
-        {
-            "id": "hermes-agent",
-            "object": "model",
-            "created": 0,
-            "owned_by": "hermes",
-            "name": "Hermes Agent",
-            "description": "Hermes reasoning agent with memory, skills, and tools",
-        },
-        {
-            "id": "hermes-fast",
-            "object": "model",
-            "created": 0,
-            "owned_by": "hermes",
-            "name": "Hermes Fast",
-            "description": "Hermes lightweight mode — no tools, fast responses",
-        },
-    ]
-
-
-# ---------------------------------------------------------------------------
-# Request processing
-# ---------------------------------------------------------------------------
-
-def extract_project_context(messages: list[dict]) -> dict:
-    """Extract project context from OpenCode messages.
-
-    OpenCode sends system prompts and user messages that contain
-    project info. We extract what we can for Hermes context injection.
-    """
-    context = {
-        "source": "opencode",
-        "project_files": [],
-        "current_file": None,
-    }
-
-    for msg in messages:
-        if msg.get("role") == "system":
-            content = msg.get("content", "")
-            # OpenCode often includes file paths in system prompts
-            if "Current file:" in content or "Working directory:" in content:
-                context["system_info"] = content[:2000]
-
-    return context
-
-
-def build_hermes_prompt(messages: list[dict], project_context: dict) -> str:
-    """Build a Hermes-compatible prompt from OpenCode messages.
-
-    Since Hermes is an agent (not a raw LLM), we need to format the
-    conversation into a single task prompt that Hermes can reason about.
-    """
-    parts = []
-
-    # Add project context hint
-    if project_context.get("system_info"):
-        parts.append(f"[OpenCode Context]\n{project_context['system_info']}\n")
-
-    # Add conversation
-    for msg in messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-
-        if role == "system":
-            continue  # Already handled above
-        elif role == "user":
-            parts.append(f"User: {content}")
-        elif role == "assistant":
-            parts.append(f"Assistant: {content}")
-
-    return "\n\n".join(parts)
-
-
-# ---------------------------------------------------------------------------
-# Streaming response generator
-# ---------------------------------------------------------------------------
-
-async def stream_hermes_response(
-    prompt: str,
-    model: str,
-    request_id: str,
-) -> AsyncIterator[str]:
-    """Stream a response from Hermes as OpenAI-compatible SSE.
-
-    Yields Server-Sent Event strings in OpenAI chat.completion.chunk format.
-    """
-    # TODO: Replace with actual Hermes agent call
-    # This is the integration point where we call hermes_agent.chat()
-    # For now, emit a placeholder that proves the plumbing works.
-
-    placeholder = (
-        f"[Hermes Copilot] Model: {model} | "
-        f"Received {len(prompt)} chars. "
-        f"Integration with Hermes Agent pending."
-    )
-
-    # Stream token by token
-    for i, char in enumerate(placeholder):
-        chunk = {
-            "id": request_id,
-            "object": "chat.completion.chunk",
-            "created": 0,
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"content": char},
-                    "finish_reason": None,
-                }
-            ],
-        }
-        yield f"data: {json.dumps(chunk)}\n\n"
-        await asyncio.sleep(0.01)
-
-    # Final chunk
-    final = {
-        "id": request_id,
-        "object": "chat.completion.chunk",
-        "created": 0,
-        "model": model,
-        "choices": [
-            {
-                "index": 0,
-                "delta": {},
-                "finish_reason": "stop",
-            }
-        ],
-    }
-    yield f"data: {json.dumps(final)}\n\n"
-    yield "data: [DONE]\n\n"
-
-
-async def call_hermes_agent(
-    prompt: str,
-    model: str,
-) -> str:
-    """Call Hermes Agent synchronously (non-streaming fallback).
-
-    TODO: Replace with actual hermes integration.
-    """
-    return (
-        f"[Hermes Copilot] Model: {model} | "
-        f"Received {len(prompt)} chars. "
-        f"Integration with Hermes Agent pending."
-    )
-
-
-# ---------------------------------------------------------------------------
-# FastAPI app
-# ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="Hermes Copilot Server",
-    description="OpenAI-compatible proxy for Hermes Agent — use Hermes as your coding provider in OpenCode",
+    title="Hermes Copilot Bridge",
+    description="Optional bridge for connecting OpenCode to Hermes gateway",
     version="0.1.0",
 )
 
@@ -209,123 +53,148 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Shared HTTP client for upstream requests
+upstream_client: httpx.AsyncClient = None  # type: ignore
+upstream_url: str = DEFAULT_UPSTREAM
+
+
+@app.on_event("startup")
+async def startup():
+    global upstream_client
+    upstream_client = httpx.AsyncClient(
+        base_url=upstream_url,
+        timeout=httpx.Timeout(300.0, connect=10.0),
+    )
+    logger.info(f"Upstream: {upstream_url}")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await upstream_client.aclose()
+
 
 @app.get("/")
 async def root():
     return {
-        "name": "hermes-copilot",
-        "version": "0.1.0",
-        "description": "Hermes Agent — OpenAI-compatible API for OpenCode",
-        "endpoints": [
-            "/v1/models",
-            "/v1/chat/completions",
-            "/health",
-        ],
+        "name": "hermes-copilot-bridge",
+        "upstream": upstream_url,
+        "endpoints": ["/v1/models", "/v1/chat/completions", "/health"],
     }
 
 
 @app.get("/health")
 async def health():
-    config = get_hermes_config()
+    """Check both bridge and upstream health."""
+    try:
+        resp = await upstream_client.get("/health")
+        upstream_ok = resp.status_code == 200
+    except Exception:
+        upstream_ok = False
+
     return {
-        "status": "ok",
-        "hermes_home": str(HERMES_HOME),
-        "config_loaded": bool(config),
+        "status": "ok" if upstream_ok else "degraded",
+        "bridge": "ok",
+        "upstream": upstream_url,
+        "upstream_ok": upstream_ok,
     }
 
 
 @app.get("/v1/models")
 async def list_models():
-    """OpenAI-compatible model listing."""
-    return {
-        "object": "list",
-        "data": get_available_models(),
-    }
+    """Proxy model listing from upstream gateway."""
+    try:
+        resp = await upstream_client.get("/v1/models")
+        return resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
 
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
-    """OpenAI-compatible chat completions endpoint.
+    """Proxy chat completions to upstream gateway.
 
-    This is what OpenCode calls. We receive the messages, inject
-    Hermes context, and return the response (streamed or not).
+    Supports both streaming and non-streaming. Passes through to hermes
+    gateway without modification — hermes handles all agent logic.
     """
     try:
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
-    messages = body.get("messages", [])
-    model = body.get("model", "hermes-agent")
     stream = body.get("stream", True)
 
-    if not messages:
-        raise HTTPException(status_code=400, detail="No messages provided")
-
-    # Extract project context from OpenCode messages
-    project_context = extract_project_context(messages)
-
-    # Build Hermes prompt
-    prompt = build_hermes_prompt(messages, project_context)
-
-    request_id = f"hermes-copilot-{os.urandom(8).hex()}"
-
-    if stream:
-        return StreamingResponse(
-            stream_hermes_response(prompt, model, request_id),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Request-Id": request_id,
-            },
-        )
-    else:
-        response_text = await call_hermes_agent(prompt, model)
-        return JSONResponse(
-            {
-                "id": request_id,
-                "object": "chat.completion",
-                "created": 0,
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": response_text,
-                        },
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": len(prompt.split()),
-                    "completion_tokens": len(response_text.split()),
-                    "total_tokens": len(prompt.split()) + len(response_text.split()),
+    try:
+        if stream:
+            return StreamingResponse(
+                stream_upstream(body),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
                 },
-            }
+            )
+        else:
+            resp = await upstream_client.post(
+                "/v1/chat/completions",
+                json=body,
+            )
+            return JSONResponse(resp.json())
+    except httpx.ConnectError:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cannot connect to Hermes gateway at {upstream_url}. "
+            f"Is it running? Start with: hermes gateway restart",
         )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+async def stream_upstream(body: dict) -> AsyncIterator[str]:
+    """Stream SSE from upstream gateway to client."""
+    async with upstream_client.stream(
+        "POST", "/v1/chat/completions", json=body
+    ) as resp:
+        async for chunk in resp.aiter_text():
+            yield chunk
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Hermes Copilot Server")
-    parser.add_argument("--port", type=int, default=7878)
-    parser.add_argument("--host", default="localhost")
-    parser.add_argument("--log-level", default="info")
+    global upstream_url
+
+    parser = argparse.ArgumentParser(
+        description="Hermes Copilot Bridge — optional proxy for OpenCode"
+    )
+    parser.add_argument(
+        "--port", type=int, default=DEFAULT_PORT,
+        help=f"Bridge port (default: {DEFAULT_PORT})",
+    )
+    parser.add_argument(
+        "--host", default=DEFAULT_HOST,
+        help=f"Bridge bind address (default: {DEFAULT_HOST})",
+    )
+    parser.add_argument(
+        "--upstream", default=DEFAULT_UPSTREAM,
+        help=f"Hermes gateway URL (default: {DEFAULT_UPSTREAM})",
+    )
+    parser.add_argument(
+        "--log-level", default="info",
+        help="Log level (default: info)",
+    )
     args = parser.parse_args()
+
+    upstream_url = args.upstream
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper()),
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
 
-    logger.info(f"Starting Hermes Copilot Server on {args.host}:{args.port}")
-    logger.info(f"Hermes home: {HERMES_HOME}")
-    logger.info(f"Configure OpenCode with baseURL: http://{args.host}:{args.port}/v1")
+    logger.info(f"Hermes Copilot Bridge on {args.host}:{args.port}")
+    logger.info(f"Upstream gateway: {upstream_url}")
+    logger.info(f"OpenCode baseURL: http://{args.host}:{args.port}/v1")
+    logger.info("")
+    logger.info("Tip: If gateway is on localhost:8642, you can connect")
+    logger.info("     OpenCode directly without this bridge.")
 
     uvicorn.run(
         app,

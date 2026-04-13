@@ -1,15 +1,15 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
-const HERMES_COPILOT_PORT = Number(process.env.HERMES_COPILOT_PORT || 7878)
-const HERMES_COPILOT_HOST = process.env.HERMES_COPILOT_HOST || "localhost"
-const HERMES_COPILOT_URL = `http://${HERMES_COPILOT_HOST}:${HERMES_COPILOT_PORT}`
+const HERMES_GATEWAY_PORT = Number(process.env.API_SERVER_PORT || 8642)
+const HERMES_GATEWAY_HOST = process.env.API_SERVER_HOST || "127.0.0.1"
+const HERMES_GATEWAY_URL = `http://${HERMES_GATEWAY_HOST}:${HERMES_GATEWAY_PORT}`
 
 /**
- * Check if the Hermes Copilot server is running.
+ * Check if the Hermes gateway API is running.
  */
-async function detectHermesServer(): Promise<boolean> {
+async function detectGateway(): Promise<boolean> {
   try {
-    const res = await fetch(`${HERMES_COPILOT_URL}/health`, {
+    const res = await fetch(`${HERMES_GATEWAY_URL}/health`, {
       signal: AbortSignal.timeout(2000),
     })
     const data = await res.json()
@@ -22,62 +22,54 @@ async function detectHermesServer(): Promise<boolean> {
 /**
  * Hermes Copilot Plugin for OpenCode.
  *
- * Auto-detects the Hermes Copilot server and registers it as a provider.
- * Users with Hermes running get a "Hermes Copilot" option in their model list.
+ * Auto-detects the Hermes gateway API and simplifies connection.
+ * When the gateway is running with API_SERVER_ENABLED=true,
+ * OpenCode gets access to your Hermes agent's memory, skills, and tools.
  */
 export const HermesCopilotPlugin: Plugin = async ({ project, client, $ }) => {
-  // Check if Hermes is running on startup
-  const hermesAvailable = await detectHermesServer()
+  const gatewayAvailable = await detectGateway()
 
-  if (!hermesAvailable) {
+  if (!gatewayAvailable) {
     console.log(
-      `[Hermes Copilot] Server not found at ${HERMES_COPILOT_URL}. ` +
-        `Start it with: hermes copilot`
+      `[Hermes Copilot] Gateway not found at ${HERMES_GATEWAY_URL}.\n` +
+        `  Enable it: echo "API_SERVER_ENABLED=true" >> ~/.hermes/.env\n` +
+        `  Then: hermes gateway restart`
     )
     return {}
   }
 
-  console.log(`[Hermes Copilot] Connected to ${HERMES_COPILOT_URL}`)
+  console.log(`[Hermes Copilot] Gateway detected at ${HERMES_GATEWAY_URL}`)
 
   return {
     /**
-     * Inject project context into chat messages.
-     * This gives Hermes awareness of what you're working on.
+     * Inject project context when using hermes models.
+     * Gives Hermes awareness of git branch and working directory.
      */
     "chat.params": async ({ model, provider, message }, params) => {
-      // Only inject context when using hermes provider
       if (!model?.includes("hermes")) return
 
       try {
-        // Get current git branch
-        const branch = await $`git branch --show-current`.text().catch(() => "unknown")
+        const branch = await $`git branch --show-current`
+          .text()
+          .catch(() => "unknown")
 
-        // Get current file from message context if available
-        const contextParts = [
+        params.options = params.options || {}
+        params.options.hermes_context = [
           `[Project: ${project.id}]`,
           `[Branch: ${branch.trim()}]`,
-          `[Directory: ${project.worktree || process.cwd()}]`,
-        ]
-
-        // Add project context as a system hint
-        // This gets passed as extra headers to our server
-        params.options = params.options || {}
-        params.options.hermes_context = contextParts.join(" ")
-      } catch (err) {
+          `[Dir: ${project.worktree || process.cwd()}]`,
+        ].join(" ")
+      } catch {
         // Non-critical — continue without context
       }
     },
 
-    /**
-     * Log events for debugging.
-     */
     event: async ({ event }) => {
       if (event.type === "session.created") {
-        console.log("[Hermes Copilot] New session started")
+        console.log("[Hermes Copilot] Session started — using Hermes agent")
       }
     },
   }
 }
 
-// Default export for OpenCode plugin loading
 export default HermesCopilotPlugin

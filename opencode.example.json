@@ -3,10 +3,9 @@
   "provider": {
     "hermes": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "Hermes Copilot",
+      "name": "Hermes Agent",
       "options": {
-        "baseURL": "http://localhost:7878/v1",
-        "apiKey": "not-needed"
+        "baseURL": "http://127.0.0.1:8642/v1"
       },
       "models": {
         "hermes-agent": {
@@ -14,13 +13,6 @@
           "limit": {
             "context": 200000,
             "output": 65536
-          }
-        },
-        "hermes-fast": {
-          "name": "Hermes Fast",
-          "limit": {
-            "context": 128000,
-            "output": 16384
           }
         }
       }
