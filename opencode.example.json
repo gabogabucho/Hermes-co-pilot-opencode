@@ -1,0 +1,29 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "hermes": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Hermes Copilot",
+      "options": {
+        "baseURL": "http://localhost:7878/v1",
+        "apiKey": "not-needed"
+      },
+      "models": {
+        "hermes-agent": {
+          "name": "Hermes Agent",
+          "limit": {
+            "context": 200000,
+            "output": 65536
+          }
+        },
+        "hermes-fast": {
+          "name": "Hermes Fast",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        }
+      }
+    }
+  }
+}
